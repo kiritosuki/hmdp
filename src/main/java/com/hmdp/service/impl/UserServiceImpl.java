@@ -12,12 +12,14 @@ import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.MessageConstants;
 import com.hmdp.utils.RegexUtils;
+import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 
 import java.time.LocalDateTime;
@@ -41,6 +43,8 @@ import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
+    @Autowired
+    private HttpServletRequest httpServletRequest;
 
     /**
      * 发送验证码
@@ -94,6 +98,20 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //设置缓存有效期
         redisTemplate.expire(LOGIN_USER_KEY + token, LOGIN_USER_TTL, TimeUnit.MINUTES);
         return Result.ok(token);
+    }
+
+    /**
+     * 用户登出
+     * @return
+     */
+    @Override
+    public Result logout() {
+        String token = httpServletRequest.getHeader(SystemConstants.TOKEN_NAME);
+        log.info("token is {}", token);
+        if(token != null){
+            redisTemplate.delete(LOGIN_USER_KEY + token);
+        }
+        return Result.ok();
     }
 
     /**
