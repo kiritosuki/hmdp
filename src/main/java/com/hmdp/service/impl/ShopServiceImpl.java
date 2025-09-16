@@ -5,13 +5,19 @@ import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.utils.MessageConstants;
 import com.hmdp.utils.RedisConstants;
+import com.hmdp.utils.RedisData;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Random;
+import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
@@ -27,6 +33,10 @@ import java.util.concurrent.TimeUnit;
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
+    @Autowired
+    private ThreadPoolTaskExecutor cacheRebuildExecutor;
+    @Autowired
+    private RedissonClient redissonClient;
 
     /**
      * 根据商铺id查询商铺详细信息
@@ -34,35 +44,61 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @return
      */
     @Override
+    @Transactional
     public Result queryById(Long id) {
         String key = RedisConstants.CACHE_SHOP_KEY + id;
-        //查询redis缓存中商铺信息
+        //查询redis中的缓存信息
         Object cacheShop = redisTemplate.opsForValue().get(key);
-        Shop shop = new Shop();
-        //缓存存在
+        //若缓存存在
         if(cacheShop != null){
-            //如果是缓存空值
+            //如果缓存了空值
             if(cacheShop.toString().equals("null")){
                 return Result.fail("商铺不存在！");
             }
-            //如果是缓存商铺信息
-            shop = (Shop) cacheShop;
-            return Result.ok(shop);
+            //如果缓存了商铺信息
+            RedisData redisData = (RedisData) cacheShop;
+            //判断是否逻辑过期
+            //如果未过期 直接返回
+            if(redisData.getExpireTime().isAfter(LocalDateTime.now())){
+                return Result.ok(redisData.getData());
+            }
+            //如果已经过期 获取分布式锁 异步更新缓存 返回旧值
+            cacheRebuildExecutor.submit(() -> {
+                RLock lock = redissonClient.getLock(RedisConstants.LOCK_SHOP_KEY + id);
+                boolean isLock = lock.tryLock();
+                if(isLock){
+                    try {
+                        RedisData redisData2 = new RedisData();
+                        //查询数据库 设置逻辑过期时间
+                        redisData2.setData(getById(id));
+                        redisData2.setExpireTime(LocalDateTime.now().plusMinutes(RedisConstants.CACHE_LOGIC_SHOP_TTL));
+                        //更新缓存
+                        Long ttl = RedisConstants.CACHE_SHOP_TTL + ThreadLocalRandom.current().nextLong(-1, 2);
+                        redisTemplate.opsForValue().set(key, redisData2, ttl, TimeUnit.DAYS);
+                    } catch (Exception e) {
+                        log.error(MessageConstants.CACHE_REBUILD_ERROR);
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            });
+            return Result.ok(redisData.getData());
         }
-        //缓存不存在
-        //查询数据库
-        shop = getById(id);
-        //商铺不存在
+        //若缓存不存在
+        Shop shop = getById(id);
         if(shop == null){
+            //数据库中也没有 商铺不存在 缓存短期空值 防止穿透
             redisTemplate.opsForValue().set(key, "null", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
             return Result.fail("商铺不存在！");
         }
-        //商铺存在
-        //保存到redis缓存
-        //给key的ttl设置为随机值防止雪崩
-        Long ttl = RedisConstants.CACHE_SHOP_TTL + ThreadLocalRandom.current().nextLong(-7, 8);
-        redisTemplate.opsForValue().set(key, shop, ttl, TimeUnit.MINUTES);
-        //返回
+        //数据库中能查到 保存到redis缓存
+        //设置30min逻辑过期时间
+        //设置较长时间的实际过期时间 上下浮动防止雪崩
+        RedisData redisData3 = new RedisData();
+        redisData3.setData(shop);
+        redisData3.setExpireTime(LocalDateTime.now().plusMinutes(RedisConstants.CACHE_LOGIC_SHOP_TTL));
+        Long ttl = RedisConstants.CACHE_SHOP_TTL + ThreadLocalRandom.current().nextLong(-1, 2);
+        redisTemplate.opsForValue().set(key, redisData3, ttl, TimeUnit.DAYS);
         return Result.ok(shop);
     }
 
