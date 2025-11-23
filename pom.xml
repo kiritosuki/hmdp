@@ -68,6 +68,11 @@
             <version>4.1.108.Final</version> <!-- 和你项目里用的 netty 版本一致 -->
             <classifier>osx-aarch_64</classifier> <!-- Mac M1/M2/M3/M4 芯片要加这个 -->
         </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
     </dependencies>
 
     <build>
